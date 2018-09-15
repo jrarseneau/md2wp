@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+from __future__ import print_function
 import os
 import sys
 import re
@@ -10,9 +11,17 @@ import time
 from sys import exit
 from wordpress import API
 
-
 # This imports markdown files into wordpress
 def wp_import(folder):
+	# Set our headers
+	headers = { 'content-type': 'application/json; charset=UTF-8' }
+	
+	# load site categories
+	site_categories = get_site_taxonomy('categories')
+
+	# load site tags
+	site_tags = get_site_taxonomy('tags')
+
 	for subdir, dirs, files in os.walk(folder):
 		for file in files:
 			
@@ -23,52 +32,98 @@ def wp_import(folder):
 				time.sleep(5)
 				
 				# load YAML frontmatter for current post
-				fm = frontmatter.load(filepath)
-	            
+				fm = frontmatter.load(filepath)				
+	            				
 	            # Are we importing a post or a page?
 				if fm['layout'] == 'post':
-	
-					# create new post from source post content
-					newpost = WordPressPost()
-		            
-					# Set the easy values
-					newpost.title = fm['title']
-					newpost.date = datetime.datetime.strptime(fm['date'], "%Y-%m-%d %H:%M")
-					newpost.slug = fm['slug']
-	            
+					
+					# Initialize our data dictionary
+					data = {}
+
+					# Ensure we have at minimum the title and content, or else continue to next file
+					if fm['title'] is None or fm.content is None:
+						print("Post does not have a title or content, skipping.", end='')
+						continue
+					
+					# Set our title
+					data['title'] = fm['title']
+
 	            	# Content
 	            	# We regex replace {: .class #id } jekyll notation to:
 	            	# { .class #id } WordPress notation
-					newpost.content = re.sub(r"{:(.*)}",r"{\1}", fm.content)
-	            	
-					# Categories and tags
-					if fm['tags']:
-						tags = fm['tags'].split(",")
-					else:
-						tags = ''
-				
-					if fm['categories']:
-						categories = fm['categories'].split(",")
-					else:
-						categories = ''
+					data['content'] = re.sub(r"{:(.*)}",r"{\1}", fm.content)
+
+					# Date
+					try:
+						if fm['date'] is not None:
+							post_date = datetime.strptime(fm['date'], "%Y-%m-%d %H:%M")
+							data['date'] = str(post_date)
+					except:
+						print("Exception! Date format invalid. It should be YYYY-MM-DD HH:MM")
 					
-					newpost.terms_names = {
-	            		'post_tag': tags,
-	            		'category': categories,
-	            	}
+					# Slug
+					if fm['slug'] is not None:
+						data['slug'] = fm['slug']
 	            
+ 					# Categories
+					if fm['categories'] is not None:
+						c_raw = fm['categories'].split(",")
+						data['categories'] = []
+						
+						for c in c_raw:
+							if c.strip() in site_categories:
+								data['categories'].append(site_categories[c.strip()])
+							else:
+								try:
+									c_temp = {}
+									c_temp['name'] = c.strip()
+									r = wp.post("categories", c_temp, headers=headers)
+									data['categories'].append(r.json()['id'])
+								
+									# reload site categories since we added one
+									site_categories = get_site_taxonomy('categories')
+								except Exception as e:
+									print("Error!")
+
+					# Tags
+ 					if fm['tags'] is not None:
+						t_raw = fm['tags'].split(",")
+						data['tags'] = []
+						
+						for t in t_raw:
+							if t.strip() in site_tags:
+								data['tags'].append(site_tags[t.strip()])
+							else:
+								try:
+									t_temp = {}
+									t_temp['name'] = t.strip()
+									r = wp.post("tags", t_temp, headers=headers)
+									data['tags'].append(r.json()['id'])
+								
+									# reload site tags since we added one
+									site_tags = get_site_taxonomy('tags')
+								except Exception as e:
+									print("Error")
+
+						            	            
+					# Make sure we set our post to "published"
+					data['status'] = 'publish'
+										
 					# Check to see if we have a linked post or regular post and set accordingly
 					if fm['type'] == 'link':
-						newpost.post_format = "Link"
-						newpost.custom_fields = []
-						newpost.custom_fields.append({'key': 'external-url','value': fm['external-url']})
-	            
-					# Make sure we set our post to "published"
-					newpost.post_status = 'publish'
-	            
+						data['format'] = "link"
+						data['linked_list_url'] = fm['external-url']
+						
+					# Set our headers
+					headers = { 'content-type': 'application/json; charset=UTF-8' }
+
 					# Submit new post
-					print("Publishing post to WordPress: %s" % fm['title'])
-					wp.call(NewPost(newpost))
+					try:
+						print("Importing: %s ..." % fm['title'], end='')
+						wp.post("posts", data, headers=headers)
+						print("success!")
+					except Exception as e:
+						print("error! %s" % e)
 					
 				elif fm['layout'] == 'page':
 					
@@ -279,7 +334,20 @@ def wp_export(folder):
 		
 		# End of while True loop
 		
+def get_site_taxonomy(taxonomy):
 	
+	taxonomies = {}
+	
+	if taxonomy == "categories":
+		r =  wp.get("categories").json()
+	elif taxonomy == 'tags':
+		r = wp.get('tags').json()
+		
+	for k in r:
+		taxonomies[k['name']] = k['id']
+	
+	return taxonomies
+		
                 
 if __name__ == "__main__":
 
@@ -296,12 +364,12 @@ if __name__ == "__main__":
 	
 	wp = API(
 		url=args.site,
-		consumer_key="XXXXXXXXXXXX",
-		consumer_secret="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+		consumer_key="",
+		consumer_secret="",
 		api="wp-json",
 		version='wp/v2',
 		wp_user=args.username,
-		wp_pass=passwd,
+		wp_pass='iN8JV*N3h/JML3?f2WJ#',
 		basic_auth = True,
 		user_auth = True,
 	)
@@ -309,4 +377,4 @@ if __name__ == "__main__":
 	#wp = WordpressJsonWrapper(args.site + '/wp-json/wp/v2', args.username, passwd)
 	#wp = Client(args.site + '/xmlrpc.php', args.username, passwd)
 
-	wp_export(args.folder)
+	wp_import(args.folder)
