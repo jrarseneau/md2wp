@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import print_function
 import os
 import sys
@@ -32,11 +32,16 @@ def wp_import(folder):
 				time.sleep(5)
 				
 				# load YAML frontmatter for current post
-				fm = frontmatter.load(filepath)				
+				try:
+					fm = frontmatter.load(filepath)
+				except Exception as e:
+					print("Cannot parse YAML frontmatter for %s!, skipping." % (filepath))
 	            				
 	            # Are we importing a post or a page?
 				if fm['layout'] == 'post':
-					
+
+					print("Importing Post: %s ..." % fm['title'])
+
 					# Initialize our data dictionary
 					data = {}
 
@@ -67,10 +72,12 @@ def wp_import(folder):
 	            
  					# Categories
 					if fm['categories'] is not None:
-						c_raw = fm['categories'].split(",")
+						if isinstance(fm['categories'], str):
+							fm['categories'] = fm['categories'].split(',') 
+						
 						data['categories'] = []
 						
-						for c in c_raw:
+						for c in fm['categories']:
 							if c.strip() in site_categories:
 								data['categories'].append(site_categories[c.strip()])
 							else:
@@ -84,13 +91,14 @@ def wp_import(folder):
 									site_categories = get_site_taxonomy('categories')
 								except Exception as e:
 									print("Error!")
-
-					# Tags
- 					if fm['tags'] is not None:
-						t_raw = fm['tags'].split(",")
+					
+					if fm['tags'] is not None:
+						if isinstance(fm['tags'], str):
+							fm['tags'] = fm['tags'].split(',') 
+						
 						data['tags'] = []
 						
-						for t in t_raw:
+						for t in fm['tags']:
 							if t.strip() in site_tags:
 								data['tags'].append(site_tags[t.strip()])
 							else:
@@ -103,7 +111,7 @@ def wp_import(folder):
 									# reload site tags since we added one
 									site_tags = get_site_taxonomy('tags')
 								except Exception as e:
-									print("Error")
+									print("Error adding new tag '%s': %s" % (t_temp['name'], e))
 
 						            	            
 					# Make sure we set our post to "published"
@@ -112,44 +120,64 @@ def wp_import(folder):
 					# Check to see if we have a linked post or regular post and set accordingly
 					if fm['type'] == 'link':
 						data['format'] = "link"
-						data['linked_list_url'] = fm['external-url']
+						if fm['external-url']:
+							data['meta'] = { 'external_url': fm['external-url'] }
+						else:
+							print("WARNING: Expected external-url for post type Link, did not find.")
 						
 					# Set our headers
 					headers = { 'content-type': 'application/json; charset=UTF-8' }
 
-					# Submit new post
+					# Submit new post					
 					try:
-						print("Importing: %s ..." % fm['title'], end='')
 						wp.post("posts", data, headers=headers)
-						print("success!")
 					except Exception as e:
-						print("error! %s" % e)
+						print("Error importing %s: %s" % (fm['title'], e))
 					
 				elif fm['layout'] == 'page':
 					
-					# create new page from source content
-					newpage = WordPressPage()
-		            
-					# Set the easy values
-					newpage.title = fm['title']
-					newpage.content = fm.content
-	
-					# Use page date if it exists
-					if 'date' in fm.metadata:
-						newpage.date = datetime.datetime.strptime(fm['date'], "%Y-%m-%d %H:%M")
-	
-					# Try to derive the permalink
-					if fm['permalink']:
-						permalink_raw = fm['permalink'].split("/")
-						path_array = filter(None, permalink_raw)
-						newpage.slug = path_array[-1]				
-	
+					# Start import
+					print("Importing Page: %s ..." % fm['title'])
+
+					# Initialize our data dictionary
+					data = {}
+
+					# Ensure we have at minimum the title and content, or else continue to next file
+					if fm['title'] is None or fm.content is None:
+						print("Post does not have a title or content, skipping.", end='')
+						continue
+					
+					# Set our title
+					data['title'] = fm['title']
+
+	            	# Content
+	            	# We regex replace {: .class #id } jekyll notation to:
+	            	# { .class #id } WordPress notation
+					data['content'] = re.sub(r"{:(.*)}",r"{\1}", fm.content)
+
+					# Date
+					try:
+						if fm['date'] is not None:
+							post_date = datetime.strptime(fm['date'], "%Y-%m-%d %H:%M")
+							data['date'] = str(post_date)
+					except:
+						print("Exception! Date format invalid. It should be YYYY-MM-DD HH:MM")
+					
+					# Slug
+					if fm['slug'] is not None:
+						data['slug'] = fm['slug']
+
 					# Make sure we set our post to "published"
-					newpage.post_status = 'publish'
-	
-					# Submit new page
-					print("Publishing page to WordPress: %s" % fm['title'])
-					wp.call(NewPost(newpage))
+					data['status'] = 'publish'
+
+					# Set our headers
+					headers = { 'content-type': 'application/json; charset=UTF-8' }
+
+					# Submit new post					
+					try:
+						wp.post("pages", data, headers=headers)
+					except Exception as e:
+						print("error! %s" % e)
 					
 				else:
 					
@@ -171,6 +199,7 @@ def wp_export(folder):
 	while True:
 		r = wp.get("posts",params={'per_page': increment, 'offset': offset})
 		posts = r.json()
+		print(posts)
 		if len(posts) == 0:
 			break # no more posts to query
 			
@@ -246,9 +275,9 @@ def wp_export(folder):
 			file = '%s-%s.markdown' % (post_date_raw.strftime('%Y-%m-%d'), post.get('slug'))
 			#file = path + "/" + post_date_raw.strftime('%Y-%m-%d') + "-" + post.get('slug') + ".markdown"
 			print("Writing post to file: %s%s" % (path, file))
-			f = open('%s%s' % (path, file), 'w')
-			f.write(output)
-			f.close
+			#f = open('%s%s' % (path, file), 'w')
+			#f.write(output)
+			#f.close
 
 			# End of post loop
 			
@@ -339,16 +368,20 @@ def get_site_taxonomy(taxonomy):
 	taxonomies = {}
 	
 	if taxonomy == "categories":
-		r =  wp.get("categories").json()
+		# Currently only supports 100 categories
+		# Need to implement pagination!
+		r =  wp.get("categories/?per_page=100").json()
 	elif taxonomy == 'tags':
-		r = wp.get('tags').json()
+		# Currently only supports 100 tags
+		# Need to implement pagination!
+		r = wp.get('tags/?per_page=100').json()
 		
 	for k in r:
 		taxonomies[k['name']] = k['id']
 	
 	return taxonomies
 		
-                
+		
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(prog="md2wp", description="Small program to import Jekyll-formatted markdown posts & pages to WordPress.")
@@ -369,12 +402,9 @@ if __name__ == "__main__":
 		api="wp-json",
 		version='wp/v2',
 		wp_user=args.username,
-		wp_pass='iN8JV*N3h/JML3?f2WJ#',
+		wp_pass=passwd,
 		basic_auth = True,
 		user_auth = True,
 	)
-	
-	#wp = WordpressJsonWrapper(args.site + '/wp-json/wp/v2', args.username, passwd)
-	#wp = Client(args.site + '/xmlrpc.php', args.username, passwd)
 
 	wp_import(args.folder)
